@@ -83,8 +83,8 @@ class VideoExtractor:
             print(f"Error extracting videos: {e}")
             return []
     
-    def download_video(self, video_url, output_path=None):
-        """Download video using curl to recreate browser's exact network request"""
+    def get_download_command(self, video_url, output_path=None):
+        """Validate video URL and return curl command for downloading"""
         try:
             # Determine output filename
             if not output_path:
@@ -94,7 +94,7 @@ class VideoExtractor:
                     filename = 'video.mp4'
                 output_path = filename
             
-            print(f"Downloading video from: {video_url}")
+            print(f"Validating video URL: {video_url}")
             
             # Get cookies from the browser session
             cookies = self.driver.get_cookies()
@@ -102,8 +102,67 @@ class VideoExtractor:
             # Create cookie string for curl
             cookie_string = "; ".join([f"{cookie['name']}={cookie['value']}" for cookie in cookies])
             
-            # Build curl command with exact browser headers
-            curl_cmd = [
+            # Build curl command for HEAD request to validate
+            head_cmd = [
+                'curl',
+                '-I',  # HEAD request only
+                '-L',  # Follow redirects
+                '-s',  # Silent mode
+                '-H', 'User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                '-H', f'Referer: {self.driver.current_url}',
+                '-H', 'Accept: video/webm,video/ogg,video/*;q=0.9,application/ogg;q=0.7,audio/*;q=0.6,*/*;q=0.5',
+                '-H', 'Accept-Language: en-US,en;q=0.9',
+                '-H', 'Connection: keep-alive'
+            ]
+            
+            # Add cookies if available
+            if cookie_string:
+                head_cmd.extend(['-H', f'Cookie: {cookie_string}'])
+            
+            head_cmd.append(video_url)
+            
+            # Execute HEAD request to validate
+            result = subprocess.run(head_cmd, capture_output=True, text=True)
+            
+            if result.returncode != 0:
+                print(f"HEAD request failed with return code: {result.returncode}")
+                return None
+            
+            # Parse response headers
+            headers = result.stdout
+            status_line = headers.split('\n')[0] if headers else ''
+            
+            # Check status code
+            if '200' not in status_line and '206' not in status_line:
+                print(f"Invalid status code: {status_line}")
+                return None
+            
+            # Check content type
+            content_type = ''
+            content_length = ''
+            for line in headers.split('\n'):
+                if line.lower().startswith('content-type:'):
+                    content_type = line.split(':', 1)[1].strip().lower()
+                elif line.lower().startswith('content-length:'):
+                    content_length = line.split(':', 1)[1].strip()
+            
+            # Validate content type
+            valid_types = ['video/', 'application/octet-stream', 'binary/octet-stream']
+            if not any(vtype in content_type for vtype in valid_types) and content_type:
+                print(f"Warning: Unexpected content type: {content_type}")
+            
+            # Show file size if available
+            if content_length:
+                try:
+                    size_mb = int(content_length) / (1024 * 1024)
+                    print(f"Video file size: {size_mb:.2f} MB")
+                except:
+                    pass
+            
+            print("✓ Video URL validated successfully")
+            
+            # Build final download command
+            download_cmd = [
                 'curl',
                 '-L',  # Follow redirects
                 '--progress-bar',  # Show progress bar
@@ -124,63 +183,18 @@ class VideoExtractor:
             
             # Add cookies if available
             if cookie_string:
-                curl_cmd.extend(['-H', f'Cookie: {cookie_string}'])
+                download_cmd.extend(['-H', f'Cookie: {cookie_string}'])
             
-            # Add the URL
-            curl_cmd.append(video_url)
+            download_cmd.append(video_url)
             
-            print("Executing curl command to download video...")
-            print(f"Command: {' '.join(curl_cmd[:10])}... [truncated]")
-            
-            # Execute curl command
-            result = subprocess.run(curl_cmd, capture_output=True, text=True)
-            
-            if result.returncode == 0:
-                if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
-                    file_size = os.path.getsize(output_path)
-                    print(f"\nVideo downloaded successfully: {output_path}")
-                    print(f"File size: {file_size / (1024*1024):.2f} MB")
-                    return output_path
-                else:
-                    print(f"\nDownload completed but file is empty or missing")
-                    return None
-            else:
-                print(f"\nCurl failed with return code: {result.returncode}")
-                print(f"Error output: {result.stderr}")
-                
-                # Fallback: try with minimal headers
-                print("Retrying with minimal headers...")
-                minimal_curl_cmd = [
-                    'curl',
-                    '-L',
-                    '--progress-bar',
-                    '-o', output_path,
-                    '-H', 'User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-                    '-H', f'Referer: {self.driver.current_url}'
-                ]
-                
-                if cookie_string:
-                    minimal_curl_cmd.extend(['-H', f'Cookie: {cookie_string}'])
-                
-                minimal_curl_cmd.append(video_url)
-                
-                result = subprocess.run(minimal_curl_cmd, capture_output=True, text=True)
-                
-                if result.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 0:
-                    file_size = os.path.getsize(output_path)
-                    print(f"\nVideo downloaded successfully with minimal headers: {output_path}")
-                    print(f"File size: {file_size / (1024*1024):.2f} MB")
-                    return output_path
-                else:
-                    print(f"Minimal headers also failed: {result.stderr}")
-                    return None
+            return ' '.join(f'"{arg}"' if ' ' in arg else arg for arg in download_cmd)
             
         except subprocess.SubprocessError as e:
             print(f"Error executing curl: {e}")
             print("Make sure curl is installed and available in PATH")
             return None
         except Exception as e:
-            print(f"Unexpected error during download: {e}")
+            print(f"Unexpected error during validation: {e}")
             return None
     
     def stream_video_in_browser(self, video_url):
@@ -346,7 +360,7 @@ def main():
     parser.add_argument('url', help='URL of the webpage containing the video')
     parser.add_argument('--no-headless', action='store_true', help='Run browser in non-headless mode')
     parser.add_argument('--timeout', type=int, default=10, help='Timeout in seconds (default: 10)')
-    parser.add_argument('--download', action='store_true', help='Download the first video found')
+    parser.add_argument('--get-command', action='store_true', help='Get curl command for downloading the first video found')
     parser.add_argument('--output', '-o', help='Output filename for downloaded video')
     parser.add_argument('--test-stream', action='store_true', help='Test if videos can be streamed in browser')
     
@@ -368,18 +382,14 @@ def main():
                     print(f"\nTesting video {i}:")
                     extractor.stream_video_in_browser(url)
             
-            if args.download and video_urls:
-                print(f"\nDownloading first video...")
-                downloaded_file = extractor.download_video(video_urls[0], args.output)
-                if downloaded_file:
-                    print(f"Video saved as: {downloaded_file}")
+            if args.get_command and video_urls:
+                print(f"\nGetting download command for first video...")
+                curl_command = extractor.get_download_command(video_urls[0], args.output)
+                if curl_command:
+                    print(f"\nCurl command to download video:")
+                    print(curl_command)
                 else:
-                    print("Download failed. Trying to stream in browser first...")
-                    if extractor.stream_video_in_browser(video_urls[0]):
-                        print("Video streams successfully. Retrying download...")
-                        downloaded_file = extractor.download_video(video_urls[0], args.output)
-                        if downloaded_file:
-                            print(f"Video saved as: {downloaded_file}")
+                    print("Failed to generate download command.")
         else:
             print("No video URLs found.")
             
