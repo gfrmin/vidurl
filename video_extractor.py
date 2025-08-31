@@ -33,6 +33,11 @@ class VideoExtractor:
         chrome_options.add_argument('--window-size=1920,1080')
         chrome_options.add_argument('--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36')
         
+        # Enable logging for network requests
+        chrome_options.add_argument('--enable-logging')
+        chrome_options.add_argument('--log-level=0')
+        chrome_options.set_capability('goog:loggingPrefs', {'performance': 'ALL'})
+        
         try:
             self.driver = webdriver.Chrome(options=chrome_options)
         except WebDriverException as e:
@@ -49,9 +54,6 @@ class VideoExtractor:
             # Wait for page to load
             time.sleep(3)
             
-            # Try to find and click play buttons to trigger video loading
-            self.trigger_video_loading()
-            
             # Get page source after JavaScript execution
             soup = BeautifulSoup(self.driver.page_source, 'html.parser')
             
@@ -63,10 +65,14 @@ class VideoExtractor:
             # Method 2: Find video URLs in script tags
             video_urls.update(self.find_videos_in_scripts(soup, url))
             
-            # Method 3: Check network requests for video files
+            # Method 3: Check initial network requests
             video_urls.update(self.find_videos_in_network())
             
-            # Method 4: Look for common video hosting patterns
+            # Method 4: Try to find and click play buttons to trigger video loading
+            new_video_urls = self.trigger_video_loading_and_monitor()
+            video_urls.update(new_video_urls)
+            
+            # Method 5: Look for common video hosting patterns
             video_urls.update(self.find_embedded_videos(soup, url))
             
             if not video_urls:
@@ -202,8 +208,10 @@ class VideoExtractor:
             return None
     
     
-    def trigger_video_loading(self):
-        """Try to trigger video loading by clicking play buttons"""
+    def trigger_video_loading_and_monitor(self):
+        """Try to trigger video loading by clicking play buttons and monitor network requests"""
+        video_urls = set()
+        
         play_selectors = [
             'button[aria-label*="play" i]',
             'button[title*="play" i]',
@@ -211,19 +219,52 @@ class VideoExtractor:
             '.video-play-button',
             '[class*="play"]',
             'button:contains("Play")',
-            '.vjs-big-play-button'
+            '.vjs-big-play-button',
+            'video',  # Try clicking on video elements directly
+            '.video-container',
+            '[data-testid*="play"]',
+            '[role="button"]'
         ]
+        
+        print("Looking for play buttons and monitoring network requests...")
         
         for selector in play_selectors:
             try:
                 elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
                 for element in elements:
                     if element.is_displayed():
+                        print(f"Clicking element: {selector}")
+                        
+                        # Clear previous logs
+                        self.driver.get_log('performance')
+                        
+                        # Click the element
                         element.click()
-                        time.sleep(2)
-                        break
-            except:
+                        
+                        # Wait and monitor network requests
+                        for i in range(5):  # Monitor for 5 seconds
+                            time.sleep(1)
+                            new_urls = self.find_videos_in_network()
+                            if new_urls:
+                                video_urls.update(new_urls)
+                                print(f"Found {len(new_urls)} video URLs after clicking")
+                        
+                        # Try different click methods if first didn't work
+                        try:
+                            self.driver.execute_script("arguments[0].click();", element)
+                            time.sleep(2)
+                            new_urls = self.find_videos_in_network()
+                            video_urls.update(new_urls)
+                        except:
+                            pass
+                        
+                        if video_urls:
+                            break
+            except Exception as e:
+                print(f"Error with selector {selector}: {e}")
                 continue
+        
+        return video_urls
     
     def find_html5_videos(self, soup, base_url):
         """Find HTML5 video elements"""
@@ -269,28 +310,59 @@ class VideoExtractor:
         video_urls = set()
         
         try:
+            import json
             # Get network logs (requires Chrome with logging enabled)
             logs = self.driver.get_log('performance')
+            
             for log in logs:
-                message = log.get('message', {})
-                if isinstance(message, str):
-                    import json
-                    try:
+                try:
+                    message = log.get('message', {})
+                    if isinstance(message, str):
                         message = json.loads(message)
-                    except:
-                        continue
-                
-                if message.get('message', {}).get('method') == 'Network.responseReceived':
-                    response = message['message']['params']['response']
-                    url = response.get('url', '')
-                    mime_type = response.get('mimeType', '')
                     
-                    if any(ext in url.lower() for ext in ['.mp4', '.webm', '.ogg', '.avi', '.mov']):
-                        video_urls.add(url)
-                    elif 'video' in mime_type.lower():
-                        video_urls.add(url)
-        except:
-            pass  # Network logging might not be available
+                    # Check for network responses
+                    if message.get('message', {}).get('method') == 'Network.responseReceived':
+                        response = message['message']['params']['response']
+                        url = response.get('url', '')
+                        mime_type = response.get('mimeType', '').lower()
+                        headers = response.get('headers', {})
+                        
+                        # Check for video file extensions
+                        video_extensions = ['.mp4', '.webm', '.ogg', '.avi', '.mov', '.wmv', '.flv', '.m4v', '.mkv']
+                        if any(ext in url.lower() for ext in video_extensions):
+                            print(f"Found video URL by extension: {url}")
+                            video_urls.add(url)
+                        
+                        # Check MIME type
+                        elif 'video/' in mime_type:
+                            print(f"Found video URL by MIME type ({mime_type}): {url}")
+                            video_urls.add(url)
+                        
+                        # Check content-type header
+                        elif any('video/' in str(v).lower() for v in headers.values()):
+                            print(f"Found video URL by content-type header: {url}")
+                            video_urls.add(url)
+                        
+                        # Check for streaming segments (HLS, DASH)
+                        elif any(segment in url.lower() for segment in ['.m3u8', '.mpd', '/segment', '/chunk']):
+                            print(f"Found streaming URL: {url}")
+                            video_urls.add(url)
+                    
+                    # Also check for network requests (not just responses)
+                    elif message.get('message', {}).get('method') == 'Network.requestWillBeSent':
+                        request = message['message']['params']['request']
+                        url = request.get('url', '')
+                        
+                        video_extensions = ['.mp4', '.webm', '.ogg', '.avi', '.mov', '.wmv', '.flv', '.m4v', '.mkv']
+                        if any(ext in url.lower() for ext in video_extensions):
+                            print(f"Found video request: {url}")
+                            video_urls.add(url)
+                
+                except (json.JSONDecodeError, KeyError, TypeError) as e:
+                    continue
+                    
+        except Exception as e:
+            print(f"Error reading network logs: {e}")
         
         return video_urls
     
