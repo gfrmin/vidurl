@@ -12,6 +12,8 @@ import time
 import re
 import os
 import requests
+import subprocess
+import tempfile
 from urllib.parse import urljoin, urlparse
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -82,32 +84,8 @@ class VideoExtractor:
             return []
     
     def download_video(self, video_url, output_path=None):
-        """Download video using browser session to avoid 403 errors"""
+        """Download video using curl to recreate browser's exact network request"""
         try:
-            # Get cookies from the browser session
-            cookies = self.driver.get_cookies()
-            
-            # Convert selenium cookies to requests format
-            session = requests.Session()
-            for cookie in cookies:
-                session.cookies.set(cookie['name'], cookie['value'], domain=cookie.get('domain'))
-            
-            # Set headers to match browser
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-                'Referer': self.driver.current_url,
-                'Accept': 'video/webm,video/ogg,video/*;q=0.9,application/ogg;q=0.7,audio/*;q=0.6,*/*;q=0.5',
-                'Accept-Language': 'en-US,en;q=0.5',
-                'Accept-Encoding': 'identity',
-                'Range': 'bytes=0-'
-            }
-            
-            print(f"Downloading video from: {video_url}")
-            
-            # Make request with browser session
-            response = session.get(video_url, headers=headers, stream=True)
-            response.raise_for_status()
-            
             # Determine output filename
             if not output_path:
                 parsed_url = urlparse(video_url)
@@ -116,24 +94,90 @@ class VideoExtractor:
                     filename = 'video.mp4'
                 output_path = filename
             
-            # Download the video
-            total_size = int(response.headers.get('content-length', 0))
-            downloaded = 0
+            print(f"Downloading video from: {video_url}")
             
-            with open(output_path, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
-                        downloaded += len(chunk)
-                        if total_size > 0:
-                            percent = (downloaded / total_size) * 100
-                            print(f"\rDownload progress: {percent:.1f}%", end='', flush=True)
+            # Get cookies from the browser session
+            cookies = self.driver.get_cookies()
             
-            print(f"\nVideo downloaded successfully: {output_path}")
-            return output_path
+            # Create cookie string for curl
+            cookie_string = "; ".join([f"{cookie['name']}={cookie['value']}" for cookie in cookies])
             
-        except requests.exceptions.RequestException as e:
-            print(f"Error downloading video: {e}")
+            # Build curl command with exact browser headers
+            curl_cmd = [
+                'curl',
+                '-L',  # Follow redirects
+                '--progress-bar',  # Show progress bar
+                '-o', output_path,  # Output file
+                '-H', 'User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                '-H', f'Referer: {self.driver.current_url}',
+                '-H', 'Accept: video/webm,video/ogg,video/*;q=0.9,application/ogg;q=0.7,audio/*;q=0.6,*/*;q=0.5',
+                '-H', 'Accept-Language: en-US,en;q=0.9',
+                '-H', 'Accept-Encoding: gzip, deflate, br',
+                '-H', 'Connection: keep-alive',
+                '-H', 'Upgrade-Insecure-Requests: 1',
+                '-H', 'Sec-Fetch-Dest: video',
+                '-H', 'Sec-Fetch-Mode: no-cors',
+                '-H', 'Sec-Fetch-Site: same-origin',
+                '-H', 'Cache-Control: no-cache',
+                '-H', 'Pragma: no-cache'
+            ]
+            
+            # Add cookies if available
+            if cookie_string:
+                curl_cmd.extend(['-H', f'Cookie: {cookie_string}'])
+            
+            # Add the URL
+            curl_cmd.append(video_url)
+            
+            print("Executing curl command to download video...")
+            print(f"Command: {' '.join(curl_cmd[:10])}... [truncated]")
+            
+            # Execute curl command
+            result = subprocess.run(curl_cmd, capture_output=True, text=True)
+            
+            if result.returncode == 0:
+                if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                    file_size = os.path.getsize(output_path)
+                    print(f"\nVideo downloaded successfully: {output_path}")
+                    print(f"File size: {file_size / (1024*1024):.2f} MB")
+                    return output_path
+                else:
+                    print(f"\nDownload completed but file is empty or missing")
+                    return None
+            else:
+                print(f"\nCurl failed with return code: {result.returncode}")
+                print(f"Error output: {result.stderr}")
+                
+                # Fallback: try with minimal headers
+                print("Retrying with minimal headers...")
+                minimal_curl_cmd = [
+                    'curl',
+                    '-L',
+                    '--progress-bar',
+                    '-o', output_path,
+                    '-H', 'User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                    '-H', f'Referer: {self.driver.current_url}'
+                ]
+                
+                if cookie_string:
+                    minimal_curl_cmd.extend(['-H', f'Cookie: {cookie_string}'])
+                
+                minimal_curl_cmd.append(video_url)
+                
+                result = subprocess.run(minimal_curl_cmd, capture_output=True, text=True)
+                
+                if result.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                    file_size = os.path.getsize(output_path)
+                    print(f"\nVideo downloaded successfully with minimal headers: {output_path}")
+                    print(f"File size: {file_size / (1024*1024):.2f} MB")
+                    return output_path
+                else:
+                    print(f"Minimal headers also failed: {result.stderr}")
+                    return None
+            
+        except subprocess.SubprocessError as e:
+            print(f"Error executing curl: {e}")
+            print("Make sure curl is installed and available in PATH")
             return None
         except Exception as e:
             print(f"Unexpected error during download: {e}")
