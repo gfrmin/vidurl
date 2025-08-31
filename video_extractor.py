@@ -2,39 +2,31 @@
 """
 Video URL Extractor
 
-Extracts direct video URLs from web pages using headless browser automation.
-Supports common video hosting platforms and embedded videos.
+Extracts the main video URL from a web page and returns a validated curl command.
 """
 
-import argparse
 import sys
 import time
 import re
 import os
-import requests
 import subprocess
-import tempfile
 from urllib.parse import urljoin, urlparse
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, WebDriverException
+from selenium.common.exceptions import WebDriverException
 from bs4 import BeautifulSoup
 
 
 class VideoExtractor:
-    def __init__(self, headless=True, timeout=10):
-        self.timeout = timeout
+    def __init__(self):
         self.driver = None
-        self.setup_driver(headless)
+        self.setup_driver()
     
-    def setup_driver(self, headless):
+    def setup_driver(self):
         """Setup Chrome WebDriver with appropriate options"""
         chrome_options = Options()
-        if headless:
-            chrome_options.add_argument('--headless')
+        chrome_options.add_argument('--headless')
         chrome_options.add_argument('--no-sandbox')
         chrome_options.add_argument('--disable-dev-shm-usage')
         chrome_options.add_argument('--disable-gpu')
@@ -48,8 +40,8 @@ class VideoExtractor:
             print("Make sure ChromeDriver is installed and in PATH")
             sys.exit(1)
     
-    def extract_video_urls(self, url):
-        """Extract video URLs from the given webpage"""
+    def find_main_video(self, url):
+        """Find the main video URL from the webpage and return validated curl command"""
         try:
             print(f"Loading page: {url}")
             self.driver.get(url)
@@ -77,22 +69,34 @@ class VideoExtractor:
             # Method 4: Look for common video hosting patterns
             video_urls.update(self.find_embedded_videos(soup, url))
             
-            return list(video_urls)
+            if not video_urls:
+                print("No video URLs found.")
+                return None
+            
+            print(f"Found {len(video_urls)} video URL(s)")
+            
+            # Try each video URL until we find one that works
+            for video_url in video_urls:
+                print(f"Testing video URL: {video_url}")
+                curl_command = self.get_download_command(video_url)
+                if curl_command:
+                    return curl_command
+            
+            print("No valid video URLs found.")
+            return None
             
         except Exception as e:
             print(f"Error extracting videos: {e}")
-            return []
+            return None
     
-    def get_download_command(self, video_url, output_path=None):
+    def get_download_command(self, video_url):
         """Validate video URL and return curl command for downloading"""
         try:
             # Determine output filename
-            if not output_path:
-                parsed_url = urlparse(video_url)
-                filename = os.path.basename(parsed_url.path)
-                if not filename or '.' not in filename:
-                    filename = 'video.mp4'
-                output_path = filename
+            parsed_url = urlparse(video_url)
+            filename = os.path.basename(parsed_url.path)
+            if not filename or '.' not in filename:
+                filename = 'video.mp4'
             
             print(f"Validating video URL: {video_url}")
             
@@ -166,7 +170,7 @@ class VideoExtractor:
                 'curl',
                 '-L',  # Follow redirects
                 '--progress-bar',  # Show progress bar
-                '-o', output_path,  # Output file
+                '-o', filename,  # Output file
                 '-H', 'User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
                 '-H', f'Referer: {self.driver.current_url}',
                 '-H', 'Accept: video/webm,video/ogg,video/*;q=0.9,application/ogg;q=0.7,audio/*;q=0.6,*/*;q=0.5',
@@ -197,42 +201,6 @@ class VideoExtractor:
             print(f"Unexpected error during validation: {e}")
             return None
     
-    def stream_video_in_browser(self, video_url):
-        """Stream video directly in the browser to test accessibility"""
-        try:
-            print(f"Testing video stream in browser: {video_url}")
-            
-            # Navigate to the video URL directly
-            self.driver.get(video_url)
-            time.sleep(3)
-            
-            # Check if video loads successfully
-            video_elements = self.driver.find_elements(By.TAG_NAME, 'video')
-            if video_elements:
-                video = video_elements[0]
-                # Try to play the video
-                self.driver.execute_script("arguments[0].play();", video)
-                time.sleep(2)
-                
-                # Check if video is playing
-                is_playing = self.driver.execute_script(
-                    "return arguments[0].currentTime > 0 && !arguments[0].paused && !arguments[0].ended && arguments[0].readyState > 2;",
-                    video
-                )
-                
-                if is_playing:
-                    print("✓ Video is streaming successfully in browser")
-                    return True
-                else:
-                    print("✗ Video failed to play in browser")
-                    return False
-            else:
-                print("✗ No video element found when accessing URL directly")
-                return False
-                
-        except Exception as e:
-            print(f"Error testing video stream: {e}")
-            return False
     
     def trigger_video_loading(self):
         """Try to trigger video loading by clicking play buttons"""
@@ -356,42 +324,21 @@ class VideoExtractor:
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Extract direct video URLs from web pages')
-    parser.add_argument('url', help='URL of the webpage containing the video')
-    parser.add_argument('--no-headless', action='store_true', help='Run browser in non-headless mode')
-    parser.add_argument('--timeout', type=int, default=10, help='Timeout in seconds (default: 10)')
-    parser.add_argument('--get-command', action='store_true', help='Get curl command for downloading the first video found')
-    parser.add_argument('--output', '-o', help='Output filename for downloaded video')
-    parser.add_argument('--test-stream', action='store_true', help='Test if videos can be streamed in browser')
+    if len(sys.argv) != 2:
+        print("Usage: python video_extractor.py <URL>")
+        sys.exit(1)
     
-    args = parser.parse_args()
-    
-    extractor = VideoExtractor(headless=not args.no_headless, timeout=args.timeout)
+    url = sys.argv[1]
+    extractor = VideoExtractor()
     
     try:
-        video_urls = extractor.extract_video_urls(args.url)
+        curl_command = extractor.find_main_video(url)
         
-        if video_urls:
-            print(f"\nFound {len(video_urls)} video URL(s):")
-            for i, url in enumerate(video_urls, 1):
-                print(f"{i}. {url}")
-            
-            if args.test_stream:
-                print("\nTesting video streams...")
-                for i, url in enumerate(video_urls, 1):
-                    print(f"\nTesting video {i}:")
-                    extractor.stream_video_in_browser(url)
-            
-            if args.get_command and video_urls:
-                print(f"\nGetting download command for first video...")
-                curl_command = extractor.get_download_command(video_urls[0], args.output)
-                if curl_command:
-                    print(f"\nCurl command to download video:")
-                    print(curl_command)
-                else:
-                    print("Failed to generate download command.")
+        if curl_command:
+            print(f"\nValidated curl command to download video:")
+            print(curl_command)
         else:
-            print("No video URLs found.")
+            print("Failed to find a valid video URL.")
             
     except KeyboardInterrupt:
         print("\nOperation cancelled by user.")
