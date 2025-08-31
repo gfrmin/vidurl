@@ -10,6 +10,8 @@ import argparse
 import sys
 import time
 import re
+import os
+import requests
 from urllib.parse import urljoin, urlparse
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -78,6 +80,101 @@ class VideoExtractor:
         except Exception as e:
             print(f"Error extracting videos: {e}")
             return []
+    
+    def download_video(self, video_url, output_path=None):
+        """Download video using browser session to avoid 403 errors"""
+        try:
+            # Get cookies from the browser session
+            cookies = self.driver.get_cookies()
+            
+            # Convert selenium cookies to requests format
+            session = requests.Session()
+            for cookie in cookies:
+                session.cookies.set(cookie['name'], cookie['value'], domain=cookie.get('domain'))
+            
+            # Set headers to match browser
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'Referer': self.driver.current_url,
+                'Accept': 'video/webm,video/ogg,video/*;q=0.9,application/ogg;q=0.7,audio/*;q=0.6,*/*;q=0.5',
+                'Accept-Language': 'en-US,en;q=0.5',
+                'Accept-Encoding': 'identity',
+                'Range': 'bytes=0-'
+            }
+            
+            print(f"Downloading video from: {video_url}")
+            
+            # Make request with browser session
+            response = session.get(video_url, headers=headers, stream=True)
+            response.raise_for_status()
+            
+            # Determine output filename
+            if not output_path:
+                parsed_url = urlparse(video_url)
+                filename = os.path.basename(parsed_url.path)
+                if not filename or '.' not in filename:
+                    filename = 'video.mp4'
+                output_path = filename
+            
+            # Download the video
+            total_size = int(response.headers.get('content-length', 0))
+            downloaded = 0
+            
+            with open(output_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        if total_size > 0:
+                            percent = (downloaded / total_size) * 100
+                            print(f"\rDownload progress: {percent:.1f}%", end='', flush=True)
+            
+            print(f"\nVideo downloaded successfully: {output_path}")
+            return output_path
+            
+        except requests.exceptions.RequestException as e:
+            print(f"Error downloading video: {e}")
+            return None
+        except Exception as e:
+            print(f"Unexpected error during download: {e}")
+            return None
+    
+    def stream_video_in_browser(self, video_url):
+        """Stream video directly in the browser to test accessibility"""
+        try:
+            print(f"Testing video stream in browser: {video_url}")
+            
+            # Navigate to the video URL directly
+            self.driver.get(video_url)
+            time.sleep(3)
+            
+            # Check if video loads successfully
+            video_elements = self.driver.find_elements(By.TAG_NAME, 'video')
+            if video_elements:
+                video = video_elements[0]
+                # Try to play the video
+                self.driver.execute_script("arguments[0].play();", video)
+                time.sleep(2)
+                
+                # Check if video is playing
+                is_playing = self.driver.execute_script(
+                    "return arguments[0].currentTime > 0 && !arguments[0].paused && !arguments[0].ended && arguments[0].readyState > 2;",
+                    video
+                )
+                
+                if is_playing:
+                    print("✓ Video is streaming successfully in browser")
+                    return True
+                else:
+                    print("✗ Video failed to play in browser")
+                    return False
+            else:
+                print("✗ No video element found when accessing URL directly")
+                return False
+                
+        except Exception as e:
+            print(f"Error testing video stream: {e}")
+            return False
     
     def trigger_video_loading(self):
         """Try to trigger video loading by clicking play buttons"""
@@ -205,6 +302,9 @@ def main():
     parser.add_argument('url', help='URL of the webpage containing the video')
     parser.add_argument('--no-headless', action='store_true', help='Run browser in non-headless mode')
     parser.add_argument('--timeout', type=int, default=10, help='Timeout in seconds (default: 10)')
+    parser.add_argument('--download', action='store_true', help='Download the first video found')
+    parser.add_argument('--output', '-o', help='Output filename for downloaded video')
+    parser.add_argument('--test-stream', action='store_true', help='Test if videos can be streamed in browser')
     
     args = parser.parse_args()
     
@@ -217,6 +317,25 @@ def main():
             print(f"\nFound {len(video_urls)} video URL(s):")
             for i, url in enumerate(video_urls, 1):
                 print(f"{i}. {url}")
+            
+            if args.test_stream:
+                print("\nTesting video streams...")
+                for i, url in enumerate(video_urls, 1):
+                    print(f"\nTesting video {i}:")
+                    extractor.stream_video_in_browser(url)
+            
+            if args.download and video_urls:
+                print(f"\nDownloading first video...")
+                downloaded_file = extractor.download_video(video_urls[0], args.output)
+                if downloaded_file:
+                    print(f"Video saved as: {downloaded_file}")
+                else:
+                    print("Download failed. Trying to stream in browser first...")
+                    if extractor.stream_video_in_browser(video_urls[0]):
+                        print("Video streams successfully. Retrying download...")
+                        downloaded_file = extractor.download_video(video_urls[0], args.output)
+                        if downloaded_file:
+                            print(f"Video saved as: {downloaded_file}")
         else:
             print("No video URLs found.")
             
