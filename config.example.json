@@ -1,0 +1,19 @@
+{
+  "page_load_timeout": 15,
+  "curl_timeout": 20,
+  "video_detection_timeout": 45,
+  "headless": true,
+  "window_size": "1920,1080",
+  "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+  "video_extensions": [".mp4", ".webm", ".ogg", ".avi", ".mov", ".wmv", ".flv", ".m4v", ".mkv", ".ts", ".m2ts"],
+  "streaming_segments": [".m3u8", ".mpd", "/segment", "/chunk", "/playlist", "/manifest"],
+  "min_download_size": 2048,
+  "validation_chunk_size": 2097152,
+  "output_dir": "./downloads",
+  "default_filename": "downloaded_video.mp4",
+  "verbose": false,
+  "quiet": false,
+  "max_retries": 5,
+  "retry_backoff_factor": 1.5,
+  "max_workers": 6
+}
