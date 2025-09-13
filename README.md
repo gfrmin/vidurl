@@ -19,6 +19,11 @@
 ### From PyPI (Recommended)
 
 ```bash
+uv add vidurl
+```
+
+Or using pip:
+```bash
 pip install vidurl
 ```
 
@@ -27,6 +32,11 @@ pip install vidurl
 ```bash
 git clone https://github.com/gfrmin/vidurl.git
 cd vidurl
+uv sync
+```
+
+Or using pip:
+```bash
 pip install -e .[dev]
 ```
 
@@ -132,11 +142,11 @@ The tool validates all found URLs with HEAD requests and generates curl commands
 git clone https://github.com/gfrmin/vidurl.git
 cd vidurl
 
-# Install with development dependencies
-pip install -e .[dev]
-
 # Install using uv (recommended)
 uv sync
+
+# Or install with pip
+pip install -e .[dev]
 ```
 
 ### Running Tests
