@@ -1,9 +1,16 @@
 """
-Per-URL extraction pipeline: yt-dlp → Playwright (video / listing) → LLM fallback.
+Per-URL extraction pipeline: yt-dlp → Playwright + heuristics (with LLM
+preferred when enabled) → fallback. The escalation ladder is:
 
-Listing-page handling automatically paginates: after processing one listing
-page, vidurl finds the next page (rel=next, anchor heuristics, URL-template
-inference, or LLM fallback) and continues, capped by `config.max_pages`.
+  1. yt-dlp (always first; cheap and deterministic).
+  2. Playwright tier — for each of video extraction, listing-link discovery,
+     and next-page discovery, ask the LLM first when the LLM tier is enabled,
+     and fall back to hand-rolled heuristics if it returns nothing usable.
+     With the LLM disabled, only the heuristics run.
+
+Listing-page handling automatically paginates, capped by `config.max_pages`.
+LLM-returned URLs are still validated (curl Range for videos, HEAD probe for
+synthesized pagination URLs) before anything hits disk.
 """
 
 from __future__ import annotations
@@ -130,24 +137,17 @@ class Pipeline:
         # Only attempt in-page video extraction on the first listing page; subsequent
         # pages in a pagination walk are known to be listings.
         if is_first_page and not cfg.force_listing:
-            command = extract_video_for_page(ctx, cfg)
+            command = self._extract_video(ctx, depth)
             if command:
-                logger.info(f"{indent}Playwright found video")
                 curl_download(command, self.dry_run)
                 self.result.record_success(url)
                 return True
 
         if cfg.disable_listing:
             self.result.record_failure(url, "no video; listing disabled")
-            return self._try_llm_video(url, ctx, depth)
+            return False
 
-        links = extract_video_links(
-            ctx.page,
-            ctx.page.url,
-            selector=cfg.link_selector,
-            pattern=cfg.link_pattern,
-            min_links=cfg.listing_min_links,
-        )
+        links = self._discover_listing_links(ctx, depth)
         if links:
             logger.info(f"{indent}Found {len(links)} candidate video-page link(s)")
             any_success = self._recurse_links(links, depth)
@@ -155,25 +155,53 @@ class Pipeline:
                 self._continue_pagination(ctx, links, depth)
             return any_success
 
-        if self._try_llm_listing(url, ctx, depth):
-            if cfg.enable_pagination and is_first_page:
-                # If LLM discovered links, also try LLM-driven pagination.
-                self._continue_pagination(ctx, [], depth, force_llm_next=True)
-            return True
-        if self._try_llm_video(url, ctx, depth):
-            return True
-
         logger.warning(f"{indent}No video and no listing links on {url}")
         self.result.record_failure(url, "no video, no listing links")
         return False
+
+    def _extract_video(self, ctx: PageContext, depth: int) -> Optional[str]:
+        """Return a validated curl command for the page's main video, or None.
+
+        Tries the LLM first when enabled (it tends to be better at quirky
+        sites), then falls back to the in-DOM/network/iframe heuristics.
+        """
+        indent = "  " * depth
+        if self.config.enable_llm:
+            command = self._llm_extract_video(ctx)
+            if command:
+                logger.info(f"{indent}LLM-extracted video validated")
+                return command
+        command = extract_video_for_page(ctx, self.config)
+        if command:
+            logger.info(f"{indent}Heuristic-extracted video validated")
+        return command
+
+    def _discover_listing_links(self, ctx: PageContext, depth: int) -> list[str]:
+        """Return candidate video-page links from the loaded page.
+
+        LLM first when enabled; falls back to the URL-shape / selector / pattern
+        heuristic.
+        """
+        cfg = self.config
+        indent = "  " * depth
+        if cfg.enable_llm:
+            links = self._llm_listing_links(ctx)
+            if links:
+                logger.info(f"{indent}LLM found {len(links)} listing link(s)")
+                return links
+        return extract_video_links(
+            ctx.page,
+            ctx.page.url,
+            selector=cfg.link_selector,
+            pattern=cfg.link_pattern,
+            min_links=cfg.listing_min_links,
+        )
 
     def _continue_pagination(
         self,
         first_ctx: PageContext,
         first_page_links: list[str],
         depth: int,
-        *,
-        force_llm_next: bool = False,
     ) -> None:
         """After the first listing page has been processed, walk to subsequent pages.
 
@@ -196,7 +224,6 @@ class Pipeline:
                     current_ctx,
                     page_number=page_number,
                     video_shape=video_shape,
-                    force_llm=force_llm_next,
                 )
                 if not next_url:
                     logger.info(f"{indent}No next listing page; stopping pagination")
@@ -216,15 +243,7 @@ class Pipeline:
                 current_ctx = next_ctx
                 owns_current = True
 
-                links = extract_video_links(
-                    current_ctx.page,
-                    current_ctx.page.url,
-                    selector=cfg.link_selector,
-                    pattern=cfg.link_pattern,
-                    min_links=cfg.listing_min_links,
-                )
-                if not links:
-                    links = self._llm_listing_links(current_ctx)
+                links = self._discover_listing_links(current_ctx, depth)
                 if links:
                     if video_shape is None:
                         video_shape = _dominant_shape(links, cfg.listing_min_links)
@@ -243,23 +262,26 @@ class Pipeline:
         *,
         page_number: int,
         video_shape: Optional[Shape],
-        force_llm: bool,
     ) -> Optional[str]:
+        """Return the URL of the next listing page, or None.
+
+        LLM first when enabled; falls back to rel=next / anchor / URL-template
+        heuristics.
+        """
         cfg = self.config
-        if not force_llm:
-            candidate = find_next_page(
-                ctx.page,
-                ctx.page.url,
-                selector=cfg.next_selector,
-                pattern=cfg.next_pattern,
-                template=cfg.page_url_template,
-                next_page_number=page_number,
-                video_link_shape=video_shape,
-            )
+        if cfg.enable_llm:
+            candidate = self._llm_next_page(ctx)
             if candidate:
                 return candidate
-        # Heuristics gave up; try the LLM.
-        return self._llm_next_page(ctx)
+        return find_next_page(
+            ctx.page,
+            ctx.page.url,
+            selector=cfg.next_selector,
+            pattern=cfg.next_pattern,
+            template=cfg.page_url_template,
+            next_page_number=page_number,
+            video_link_shape=video_shape,
+        )
 
     def _recurse_links(self, links: list[str], depth: int) -> bool:
         any_success = False
@@ -272,46 +294,35 @@ class Pipeline:
                 self.result.record_failure(link, str(e))
         return any_success
 
-    def _try_llm_video(self, url: str, ctx: PageContext, depth: int) -> bool:
+    def _llm_extract_video(self, ctx: PageContext) -> Optional[str]:
+        """Ask the LLM for the main video URL, then validate via curl Range probe.
+
+        Returns the validated curl download command, or None if the LLM had no
+        answer or its answer failed validation.
+        """
         llm = self._ensure_llm()
         if llm is None:
-            return False
-        indent = "  " * depth
+            return None
         try:
             html = ctx.page.content()
+            logger.info("Asking LLM for the main video URL")
             video_url = llm.find_video_url(html, ctx.page.url)
             if not video_url:
-                return False
-            logger.info(f"{indent}LLM proposed video URL: {video_url}")
+                logger.info("LLM returned no video URL; trying heuristics")
+                return None
+            logger.info(f"LLM proposed video URL: {video_url}")
             referer = ctx.page.url
             cookies = ctx.cookies_for(referer)
             cookie_string = "; ".join(f"{c['name']}={c['value']}" for c in cookies)
             from .extractor import _validate_one
             command = _validate_one(video_url, referer, cookie_string, self.config)
             if not command:
-                logger.warning(f"{indent}LLM video URL failed validation")
-                return False
-            curl_download(command, self.dry_run)
-            self.result.record_success(url)
-            return True
+                logger.warning("LLM video URL failed validation; falling back to heuristics")
+                return None
+            return command
         except VideoExtractorError as e:
-            logger.warning(f"{indent}LLM video extraction failed: {e}")
-            return False
-
-    def _try_llm_listing(self, url: str, ctx: PageContext, depth: int) -> bool:
-        llm = self._ensure_llm()
-        if llm is None:
-            return False
-        indent = "  " * depth
-        try:
-            links = self._llm_listing_links(ctx)
-            if not links:
-                return False
-            logger.info(f"{indent}LLM proposed {len(links)} video-page link(s)")
-            return self._recurse_links(links, depth)
-        except VideoExtractorError as e:
-            logger.warning(f"{indent}LLM listing extraction failed: {e}")
-            return False
+            logger.warning(f"LLM video extraction failed: {e}")
+            return None
 
     def _llm_listing_links(self, ctx: PageContext) -> list[str]:
         llm = self._ensure_llm()
@@ -319,7 +330,11 @@ class Pipeline:
             return []
         try:
             html = ctx.page.content()
-            return llm.find_video_links(html, ctx.page.url)
+            logger.info("Asking LLM for video-page links")
+            links = llm.find_video_links(html, ctx.page.url)
+            if not links:
+                logger.info("LLM returned no listing links; trying heuristics")
+            return links
         except VideoExtractorError as e:
             logger.warning(f"LLM listing extraction failed: {e}")
             return []
@@ -330,7 +345,11 @@ class Pipeline:
             return None
         try:
             html = ctx.page.content()
-            return llm.find_next_page_url(html, ctx.page.url)
+            logger.info("Asking LLM for the next-page URL")
+            url = llm.find_next_page_url(html, ctx.page.url)
+            if not url:
+                logger.info("LLM returned no next-page URL; trying heuristics")
+            return url
         except VideoExtractorError as e:
             logger.warning(f"LLM next-page lookup failed: {e}")
             return None

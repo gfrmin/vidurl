@@ -14,7 +14,7 @@ from .exceptions import (
 )
 from .pipeline import Pipeline, PipelineResult
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 __description__ = "yt-dlp-first video extractor with Playwright + optional LLM fallback"
 
 __all__ = [
