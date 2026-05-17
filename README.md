@@ -15,18 +15,43 @@ Three-tier escalation per URL, cheapest first:
 
 ## Installation
 
+### Quick — run from PyPI with `uvx`
+
+No clone, no install step:
+
 ```bash
-uv sync
+uvx --from vidurl playwright install chromium   # one-time: install the browser
+uvx vidurl <URL>                                 # run from PyPI in an ephemeral env
+```
+
+For the LLM tier (pulls in scrapegraphai on the fly):
+
+```bash
+uvx --from 'vidurl[llm]' vidurl <URL> \
+    --llm-provider ollama --llm-model qwen2.5:7b-instruct
+```
+
+Playwright caches its browser binaries under `~/.cache/ms-playwright/`, so the one-time `playwright install chromium` is shared across `uvx` invocations.
+
+### Persistent install
+
+```bash
+uv tool install vidurl            # or: pip install vidurl
+playwright install chromium
+```
+
+With the LLM extra: `uv tool install 'vidurl[llm]'` (or `pip install 'vidurl[llm]'`).
+
+### Development clone
+
+```bash
+git clone https://github.com/gfrmin/vidurl
+cd vidurl
+uv sync                          # add --extra llm to include scrapegraphai
 uv run playwright install chromium
 ```
 
-`yt-dlp` and `playwright` are installed automatically. The LLM tier is optional:
-
-```bash
-uv sync --extra llm           # pulls in scrapegraphai
-```
-
-Also requires `curl` in `PATH`.
+`yt-dlp` and `playwright` are installed automatically. `curl` must also be on `PATH`.
 
 ## Usage
 
