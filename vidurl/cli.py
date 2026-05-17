@@ -95,6 +95,8 @@ Examples:
                         help="LLM model id (e.g. claude-haiku-4-5)")
     parser.add_argument("--no-llm", action="store_true",
                         help="Disable the LLM tier even if provider/model are set")
+    parser.add_argument("--yes", "-y", action="store_true",
+                        help="Accept auto-detected LLM pick without prompting")
 
     args = parser.parse_args()
     if args.quiet and args.verbose:
@@ -153,6 +155,17 @@ def create_config(args: argparse.Namespace) -> VideoExtractorConfig:
         overrides["default_filename"] = args.filename
 
     config_dict.update({k: v for k, v in overrides.items() if v is not None})
+
+    if (not args.no_llm
+            and not config_dict.get("disable_llm")
+            and not config_dict.get("llm_provider")
+            and not config_dict.get("llm_model")):
+        from .llm_autodetect import scrapegraphai_installed, detect_top_pick, confirm_pick
+        if scrapegraphai_installed():
+            pick = detect_top_pick()
+            if pick and confirm_pick(*pick, assume_yes=args.yes, quiet=args.quiet):
+                config_dict["llm_provider"], config_dict["llm_model"] = pick
+
     return VideoExtractorConfig(**config_dict)
 
 

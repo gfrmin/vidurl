@@ -95,6 +95,7 @@ vidurl https://example.com/weird-page \
 | `--llm-provider P` | `anthropic`, `openai`, `groq`, `google`, `ollama`, ... |
 | `--llm-model M` | Model id |
 | `--no-llm` | Disable the LLM tier even if provider/model are set |
+| `--yes / -y` | Accept the auto-detected LLM pick without prompting |
 | `--no-headless` | Show the browser window |
 | `--timeout S` | Page load timeout (default 15s) |
 | `--verbose / --quiet` | Logging |
@@ -102,6 +103,8 @@ vidurl https://example.com/weird-page \
 ## LLM tier
 
 The LLM tier is **off by default**. To enable, pass both `--llm-provider` and `--llm-model` (or set them in `config.json`). API keys are read from environment first, then from gnome-keyring via `secret-tool` under `service=env, key=<PROVIDER_KEY>`. If a key is present but provider/model are not set, vidurl logs a hint and stays off — no silent spend.
+
+If you installed the `llm` extra (`pip install 'vidurl[llm]'`) and don't pass `--llm-provider`/`--llm-model`, vidurl auto-detects an available backend and asks before using it. A local Ollama install is preferred over cloud providers; among installed Ollama models, vidurl skips embedding and vision-language families and picks the largest text LLM by parameter count. Pass `-y` to accept the pick without prompting, or `--no-llm` to skip detection entirely. Non-TTY runs (pipes, cron) skip the prompt silently unless `-y` is set.
 
 ## Pagination
 
