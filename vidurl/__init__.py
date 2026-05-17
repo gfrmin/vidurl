@@ -1,30 +1,31 @@
 """
-Video URL Extractor
-
-A Python package for extracting downloadable video URLs from web pages
-and generating validated curl commands for downloading.
+vidurl — yt-dlp-first video extractor with Playwright + optional LLM fallback.
 """
 
-from .extractor import VideoExtractor
 from .config import VideoExtractorConfig
 from .exceptions import (
+    BrowserSetupError,
+    ListingNotFoundError,
+    LLMNotConfiguredError,
+    NetworkError,
     VideoExtractorError,
-    WebDriverSetupError,
     VideoNotFoundError,
     VideoValidationError,
-    NetworkError
 )
+from .pipeline import Pipeline, PipelineResult
 
-__version__ = "0.1.0"
-__author__ = "vidurl"
-__description__ = "Extract video URLs from web pages and generate curl download commands"
+__version__ = "0.2.0"
+__description__ = "yt-dlp-first video extractor with Playwright + optional LLM fallback"
 
 __all__ = [
-    'VideoExtractor',
-    'VideoExtractorConfig',
-    'VideoExtractorError',
-    'WebDriverSetupError',
-    'VideoNotFoundError', 
-    'VideoValidationError',
-    'NetworkError',
+    "Pipeline",
+    "PipelineResult",
+    "VideoExtractorConfig",
+    "VideoExtractorError",
+    "BrowserSetupError",
+    "VideoNotFoundError",
+    "VideoValidationError",
+    "NetworkError",
+    "ListingNotFoundError",
+    "LLMNotConfiguredError",
 ]

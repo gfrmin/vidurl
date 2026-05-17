@@ -8,8 +8,8 @@ class VideoExtractorError(Exception):
     pass
 
 
-class WebDriverSetupError(VideoExtractorError):
-    """Raised when WebDriver setup fails."""
+class BrowserSetupError(VideoExtractorError):
+    """Raised when Playwright browser setup fails."""
     pass
 
 
@@ -25,4 +25,14 @@ class VideoValidationError(VideoExtractorError):
 
 class NetworkError(VideoExtractorError):
     """Raised when network operations fail."""
+    pass
+
+
+class ListingNotFoundError(VideoExtractorError):
+    """Raised when listing-link discovery yields no candidates."""
+    pass
+
+
+class LLMNotConfiguredError(VideoExtractorError):
+    """Raised when the LLM tier is reached but provider/model are not configured."""
     pass

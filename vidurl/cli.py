@@ -1,172 +1,180 @@
 """
-Command-line interface for the video extractor.
+Command-line interface for vidurl.
 """
 
-import sys
+from __future__ import annotations
+
 import argparse
 import logging
-from typing import Optional
+import shlex
+import sys
 
 from .config import VideoExtractorConfig
-from .extractor import VideoExtractor
-from .utils import setup_logging, load_config_from_file
-from .exceptions import (
-    VideoExtractorError,
-    WebDriverSetupError,
-    VideoNotFoundError,
-    VideoValidationError
-)
+from .exceptions import VideoExtractorError
+from .pipeline import Pipeline
+from .utils import load_config_from_file, setup_logging
 
 
 def parse_arguments() -> argparse.Namespace:
-    """Parse command line arguments."""
     parser = argparse.ArgumentParser(
-        description="Extract video URLs from web pages and generate curl download commands",
+        description="Extract and download videos from web pages — yt-dlp first, with Playwright fallback and optional LLM-powered extraction.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  %(prog)s https://example.com/video-page
-  %(prog)s https://example.com/video-page --output-dir ~/Downloads
-  %(prog)s https://example.com/video-page --verbose --timeout 30
-  %(prog)s https://example.com/video-page --list-all --dry-run
-        """
+  %(prog)s https://www.youtube.com/watch?v=...        # yt-dlp downloads
+  %(prog)s https://example.com/video-page             # Playwright fallback
+  %(prog)s https://example.com/gallery --listing      # crawl listing
+  %(prog)s https://example.com/page --dry-run         # print commands only
+        """,
     )
-    
-    parser.add_argument('url', help='URL of the web page containing video')
-    
-    # Output options
-    parser.add_argument('--output-dir', '-o', default='.',
-                       help='Output directory for downloaded video (default: current directory)')
-    parser.add_argument('--filename', '-f',
-                       help='Output filename (default: extracted from URL)')
-    
-    # Timeout options
-    parser.add_argument('--timeout', type=int, default=10,
-                       help='Timeout for page load and video detection (default: 10)')
-    parser.add_argument('--curl-timeout', type=int, default=10,
-                       help='Timeout for curl validation requests (default: 10)')
-    
-    # Browser options
-    parser.add_argument('--no-headless', action='store_true',
-                       help='Run browser in non-headless mode (visible browser window)')
-    parser.add_argument('--user-agent',
-                       help='Custom user agent string')
-    parser.add_argument('--window-size', default='1920,1080',
-                       help='Browser window size (default: 1920,1080)')
-    
-    # Detection options
-    parser.add_argument('--max-retries', type=int, default=3,
-                       help='Maximum retry attempts for failed operations (default: 3)')
-    parser.add_argument('--parallel', type=int, default=4,
-                       help='Number of parallel validation threads (default: 4)')
-    
-    # Output control
-    parser.add_argument('--verbose', '-v', action='store_true',
-                       help='Enable verbose output')
-    parser.add_argument('--quiet', '-q', action='store_true',
-                       help='Suppress non-essential output')
-    parser.add_argument('--list-all', action='store_true',
-                       help='List all found video URLs instead of selecting the first valid one')
-    parser.add_argument('--dry-run', action='store_true',
-                       help='Show what would be done without validation or downloading')
-    
-    # Configuration
-    parser.add_argument('--config', type=str,
-                       help='Path to JSON configuration file')
-    
+    parser.add_argument("url", help="URL of the web page (video page or listing)")
+
+    parser.add_argument("--output-dir", "-o", default=".",
+                        help="Output directory (default: current dir)")
+    parser.add_argument("--filename", "-f",
+                        help="Default filename when one can't be inferred")
+
+    parser.add_argument("--timeout", type=int, default=15,
+                        help="Page load timeout in seconds (default: 15)")
+    parser.add_argument("--curl-timeout", type=int, default=15,
+                        help="Per-request curl timeout in seconds (default: 15)")
+
+    parser.add_argument("--no-headless", action="store_true",
+                        help="Run browser with a visible window")
+    parser.add_argument("--user-agent",
+                        help="Override User-Agent string")
+    parser.add_argument("--window-size", default="1920,1080",
+                        help="Viewport size WxH (default: 1920,1080)")
+
+    parser.add_argument("--max-retries", type=int, default=3)
+    parser.add_argument("--parallel", type=int, default=4,
+                        help="Parallel validation threads (default: 4)")
+
+    parser.add_argument("--verbose", "-v", action="store_true")
+    parser.add_argument("--quiet", "-q", action="store_true")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Print yt-dlp / curl commands instead of downloading")
+
+    parser.add_argument("--config", type=str,
+                        help="Path to JSON configuration file")
+
+    # yt-dlp control
+    parser.add_argument("--no-ytdlp", action="store_true",
+                        help="Skip the yt-dlp tier; go straight to Playwright")
+    parser.add_argument("--ytdlp-args", type=str, default="",
+                        help="Extra args passed verbatim to yt-dlp (shell-quoted string)")
+
+    # Listing control
+    parser.add_argument("--listing", action="store_true",
+                        help="Force listing mode: skip in-page video extraction")
+    parser.add_argument("--no-listing", action="store_true",
+                        help="Never recurse into links even if no video found")
+    parser.add_argument("--link-selector", type=str,
+                        help="CSS selector for video-page links on a listing")
+    parser.add_argument("--link-pattern", type=str,
+                        help="Regex; only follow links whose absolute URL matches")
+    parser.add_argument("--min-links", type=int, default=3,
+                        help="Min links for listing auto-detect (default: 3)")
+
+    # LLM control
+    parser.add_argument("--llm-provider", type=str,
+                        help="LLM provider (e.g. anthropic, openai, ollama)")
+    parser.add_argument("--llm-model", type=str,
+                        help="LLM model id (e.g. claude-haiku-4-5)")
+    parser.add_argument("--no-llm", action="store_true",
+                        help="Disable the LLM tier even if provider/model are set")
+
     args = parser.parse_args()
-    
-    # Validate arguments
     if args.quiet and args.verbose:
         parser.error("--quiet and --verbose are mutually exclusive")
-    
+    if args.listing and args.no_listing:
+        parser.error("--listing and --no-listing are mutually exclusive")
     return args
 
 
-def create_config_from_args(args: argparse.Namespace) -> VideoExtractorConfig:
-    """Create configuration object from command line arguments."""
-    config_dict = {}
-    
-    # Load from config file if provided
+def _parse_viewport(window_size: str) -> tuple[int, int]:
+    try:
+        w, h = window_size.split(",")
+        return int(w), int(h)
+    except (ValueError, AttributeError):
+        return 1920, 1080
+
+
+def create_config(args: argparse.Namespace) -> VideoExtractorConfig:
+    config_dict: dict = {}
     if args.config:
         config_dict.update(load_config_from_file(args.config))
-    
-    # Override with command line arguments
-    config_dict.update({
-        'page_load_timeout': args.timeout,
-        'curl_timeout': args.curl_timeout,
-        'video_detection_timeout': args.timeout * 3,
-        'headless': not args.no_headless,
-        'window_size': args.window_size,
-        'output_dir': args.output_dir,
-        'verbose': args.verbose,
-        'quiet': args.quiet,
-        'max_retries': args.max_retries,
-        'max_workers': args.parallel,
-    })
-    
+
+    viewport_w, viewport_h = _parse_viewport(args.window_size)
+
+    overrides = {
+        "page_load_timeout": args.timeout,
+        "curl_timeout": args.curl_timeout,
+        "video_detection_timeout": args.timeout * 3,
+        "headless": not args.no_headless,
+        "viewport_width": viewport_w,
+        "viewport_height": viewport_h,
+        "output_dir": args.output_dir,
+        "verbose": args.verbose,
+        "quiet": args.quiet,
+        "max_retries": args.max_retries,
+        "max_workers": args.parallel,
+        "enable_ytdlp": not args.no_ytdlp,
+        "ytdlp_extra_args": shlex.split(args.ytdlp_args) if args.ytdlp_args else [],
+        "force_listing": args.listing,
+        "disable_listing": args.no_listing,
+        "link_selector": args.link_selector,
+        "link_pattern": args.link_pattern,
+        "listing_min_links": args.min_links,
+        "llm_provider": args.llm_provider,
+        "llm_model": args.llm_model,
+        "disable_llm": args.no_llm,
+    }
     if args.user_agent:
-        config_dict['user_agent'] = args.user_agent
-    
+        overrides["user_agent"] = args.user_agent
     if args.filename:
-        config_dict['default_filename'] = args.filename
-    
+        overrides["default_filename"] = args.filename
+
+    config_dict.update({k: v for k, v in overrides.items() if v is not None})
     return VideoExtractorConfig(**config_dict)
 
 
 def main() -> None:
-    """Main entry point for the video extractor."""
+    args = parse_arguments()
+    config = create_config(args)
+    setup_logging(config)
+    logger = logging.getLogger(__name__)
+
+    logger.info(f"Starting vidurl for: {args.url}")
+    if config.llm_provider and config.llm_model and not config.disable_llm:
+        logger.info(f"LLM tier enabled: {config.llm_provider}/{config.llm_model}")
+    elif (config.llm_provider is None) != (config.llm_model is None):
+        logger.warning("Both --llm-provider and --llm-model are required to enable the LLM tier")
+
     try:
-        # Parse command line arguments
-        args = parse_arguments()
-        
-        # Create configuration from arguments
-        config = create_config_from_args(args)
-        
-        # Setup logging
-        setup_logging(config)
-        logger = logging.getLogger(__name__)
-        
-        logger.info(f"Starting video extraction for: {args.url}")
-        
-        # Use context manager for proper resource cleanup
-        with VideoExtractor(config) as extractor:
-            # Handle dry-run mode
-            if args.dry_run:
-                logger.info("DRY RUN MODE: Would extract video from URL without validation")
-                print(f"Would extract video from: {args.url}")
-                print(f"Output directory: {config.output_dir}")
-                print(f"Configuration: headless={config.headless}, timeout={config.page_load_timeout}s")
-                return
-            
-            # Extract video URL and get curl command
-            curl_command = extractor.find_main_video(args.url)
-            
-            if curl_command:
-                if not config.quiet:
-                    print(f"\nValidated curl command to download video:")
-                print(curl_command)
-                
-                if args.list_all:
-                    # This would require modifying find_main_video to return all URLs
-                    # For now, just show a message
-                    logger.info("Note: --list-all option would show all found URLs (not implemented in this version)")
-                
-            else:
-                if not config.quiet:
-                    print("Failed to find a valid video URL.")
-                logger.error("No valid video URL found")
-                sys.exit(1)
-                
+        with Pipeline(config, dry_run=args.dry_run) as pipeline:
+            success = pipeline.process(args.url)
     except KeyboardInterrupt:
-        print("\nOperation cancelled by user.")
+        print("\nOperation cancelled by user.", file=sys.stderr)
         sys.exit(130)
-    except (VideoExtractorError, WebDriverSetupError, VideoNotFoundError, VideoValidationError) as e:
-        logger.error(f"Video extraction failed: {e}")
-        if not config.quiet if 'config' in locals() else True:
-            print(f"Error: {e}")
+    except VideoExtractorError as e:
+        logger.error(f"vidurl failed: {e}")
         sys.exit(1)
     except Exception as e:
         logger.error(f"Unexpected error: {e}", exc_info=True)
-        print(f"Unexpected error: {e}")
         sys.exit(1)
+
+    if not config.quiet:
+        if pipeline.result.successes:
+            print(f"\nProcessed {len(pipeline.result.successes)} video(s) successfully.")
+        if pipeline.result.failures:
+            print(f"Failed: {len(pipeline.result.failures)}")
+            for url, reason in pipeline.result.failures:
+                print(f"  - {url}: {reason}")
+
+    if not success and not pipeline.result.successes:
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
