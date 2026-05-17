@@ -75,10 +75,24 @@ class LLMExtractor:
             )
 
         # scrapegraphai expects "provider/model" naming
-        llm_cfg = {"model": f"{provider}/{model}"}
+        llm_cfg: dict = {"model": f"{provider}/{model}"}
         if api_key:
             llm_cfg["api_key"] = api_key
-        return {"llm": llm_cfg, "verbose": self.config.verbose, "headless": True}
+
+        graph_cfg: dict = {
+            "llm": llm_cfg,
+            "verbose": self.config.verbose,
+            "headless": True,
+        }
+
+        # Ollama: scrapegraphai's default embedding model is OpenAI's; if the user
+        # picked Ollama for the LLM they almost certainly don't want an OpenAI key
+        # requirement smuggled in via embeddings. Default to nomic-embed-text
+        # (small, fast, available alongside most Ollama installs).
+        if provider == "ollama":
+            graph_cfg["embeddings"] = {"model": "ollama/nomic-embed-text"}
+
+        return graph_cfg
 
     def _run(self, prompt: str, source_html: str) -> dict:
         try:
