@@ -61,6 +61,13 @@ class VideoExtractorConfig:
     link_pattern: Optional[str] = None
     listing_min_links: int = 3
 
+    # Pagination
+    enable_pagination: bool = True
+    max_pages: int = 10
+    next_selector: Optional[str] = None
+    next_pattern: Optional[str] = None
+    page_url_template: Optional[str] = None
+
     # LLM tier
     llm_provider: Optional[str] = None
     llm_model: Optional[str] = None

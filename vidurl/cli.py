@@ -76,6 +76,18 @@ Examples:
     parser.add_argument("--min-links", type=int, default=3,
                         help="Min links for listing auto-detect (default: 3)")
 
+    # Pagination
+    parser.add_argument("--max-pages", type=int, default=10,
+                        help="Max listing pages to walk (default: 10)")
+    parser.add_argument("--no-paginate", action="store_true",
+                        help="Disable pagination; process only the first listing page")
+    parser.add_argument("--next-selector", type=str,
+                        help="CSS selector for the next-page link")
+    parser.add_argument("--next-pattern", type=str,
+                        help="Regex; treat as next-page link only if URL matches")
+    parser.add_argument("--page-url-template", type=str,
+                        help='URL template containing "{n}"; vidurl substitutes 2..max-pages')
+
     # LLM control
     parser.add_argument("--llm-provider", type=str,
                         help="LLM provider (e.g. anthropic, openai, ollama)")
@@ -126,6 +138,11 @@ def create_config(args: argparse.Namespace) -> VideoExtractorConfig:
         "link_selector": args.link_selector,
         "link_pattern": args.link_pattern,
         "listing_min_links": args.min_links,
+        "enable_pagination": not args.no_paginate,
+        "max_pages": args.max_pages,
+        "next_selector": args.next_selector,
+        "next_pattern": args.next_pattern,
+        "page_url_template": args.page_url_template,
         "llm_provider": args.llm_provider,
         "llm_model": args.llm_model,
         "disable_llm": args.no_llm,

@@ -62,6 +62,11 @@ vidurl https://example.com/weird-page \
 | `--link-selector CSS` | Use this CSS selector to find video-page links |
 | `--link-pattern REGEX` | Only follow links whose absolute URL matches |
 | `--min-links N` | Minimum links for listing auto-detect (default 3) |
+| `--max-pages N` | Max listing pages to walk (default 10) |
+| `--no-paginate` | Disable pagination — process only the first listing page |
+| `--next-selector CSS` | CSS selector for the next-page link |
+| `--next-pattern REGEX` | Regex; treat as next-page link only if URL matches |
+| `--page-url-template URL` | URL template with `{n}`; vidurl walks 2..max-pages |
 | `--llm-provider P` | `anthropic`, `openai`, `groq`, `google`, `ollama`, ... |
 | `--llm-model M` | Model id |
 | `--no-llm` | Disable the LLM tier even if provider/model are set |
@@ -73,9 +78,20 @@ vidurl https://example.com/weird-page \
 
 The LLM tier is **off by default**. To enable, pass both `--llm-provider` and `--llm-model` (or set them in `config.json`). API keys are read from environment first, then from gnome-keyring via `secret-tool` under `service=env, key=<PROVIDER_KEY>`. If a key is present but provider/model are not set, vidurl logs a hint and stays off — no silent spend.
 
+## Pagination
+
+When a listing page is detected, vidurl walks subsequent pages automatically (capped by `--max-pages`, default 10). Next-page discovery tries, in order:
+
+1. `<link rel="next">` or `<a rel="next">`.
+2. Anchor text or `aria-label` matching `Next`, `›`, `→`, `»`, `More` (filtered to avoid "next video" navigation).
+3. URL-template inference (`?page=N`, `/page/N/`, `&offset=N`, trailing `/N`), validated with a HEAD/GET probe.
+4. LLM fallback (if the LLM tier is enabled).
+
+Override with `--next-selector`, `--next-pattern`, or `--page-url-template URL` (e.g. `https://example.com/list?page={n}`). Disable with `--no-paginate`.
+
 ## What's intentionally not (yet) supported
 
-- **Pagination** across multiple listing pages — coming later.
+- **"Load more" buttons** and **infinite scroll** — these need click-and-wait logic without a URL change.
 - **Parallel downloads** of multiple listing-page videos — sequential for now.
 
 ## Configuration

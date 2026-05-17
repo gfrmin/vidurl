@@ -120,6 +120,26 @@ class LLMExtractor:
             return None
         return urljoin(base_url, url)
 
+    def find_next_page_url(self, html: str, base_url: str) -> Optional[str]:
+        prompt = (
+            "This page is one page of a paginated listing of videos. Identify the URL "
+            "of the NEXT page in the pagination (not the previous, not page 1, not a "
+            "video page). Output JSON of shape "
+            '{"next_page_url": "<absolute URL or null>"}. '
+            "Return null if there is no next page."
+        )
+        result = self._run(prompt, html)
+        url = result.get("next_page_url") if isinstance(result, dict) else None
+        if not url or not isinstance(url, str):
+            return None
+        abs_url, _ = urldefrag(urljoin(base_url, url))
+        if not abs_url.startswith(("http://", "https://")):
+            return None
+        self_url, _ = urldefrag(base_url)
+        if abs_url == self_url:
+            return None
+        return abs_url
+
     def find_video_links(self, html: str, base_url: str) -> list[str]:
         prompt = (
             "This page is a listing of videos. For each individual video, return the URL "

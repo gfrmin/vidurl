@@ -25,6 +25,11 @@
   "link_selector": null,
   "link_pattern": null,
   "listing_min_links": 3,
+  "enable_pagination": true,
+  "max_pages": 10,
+  "next_selector": null,
+  "next_pattern": null,
+  "page_url_template": null,
   "llm_provider": null,
   "llm_model": null,
   "disable_llm": false
