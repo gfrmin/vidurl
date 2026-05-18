@@ -139,11 +139,32 @@ def _is_vision_model(m: dict) -> bool:
     return family.endswith("vl") or family in {"llava", "bakllava", "moondream"}
 
 
-def pick_best_ollama_model(models: list[dict]) -> Optional[str]:
-    usable = [
+# Substrings (case-insensitive) we treat as evidence a model has had its safety
+# training removed / weakened. These are the models we want to use as a fallback
+# when the primary aligned model refuses to extract URLs.
+UNCENSORED_MARKERS: tuple[str, ...] = (
+    "abliterate",
+    "abliterated",
+    "uncensored",
+    "huihui",
+    "dolphin",
+)
+
+
+def _usable_models(models: list[dict]) -> list[dict]:
+    return [
         m for m in models
         if m.get("name") and not _is_embedding_model(m) and not _is_vision_model(m)
     ]
+
+
+def _is_uncensored(m: dict) -> bool:
+    name = (m.get("name") or "").lower()
+    return any(marker in name for marker in UNCENSORED_MARKERS)
+
+
+def pick_best_ollama_model(models: list[dict]) -> Optional[str]:
+    usable = _usable_models(models)
     if not usable:
         return None
     usable.sort(
@@ -153,37 +174,66 @@ def pick_best_ollama_model(models: list[dict]) -> Optional[str]:
     return usable[0]["name"]
 
 
-def detect_top_pick() -> Optional[tuple[str, str]]:
-    """Return the (provider, model) pair we'd recommend, or None if nothing usable."""
+def pick_fallback_ollama_model(models: list[dict], primary: Optional[str]) -> Optional[str]:
+    """Find an uncensored/abliterated model among installed Ollama models, if any.
+
+    Returned model is the largest uncensored model that isn't the primary.
+    """
+    usable = [m for m in _usable_models(models) if _is_uncensored(m) and m.get("name") != primary]
+    if not usable:
+        return None
+    usable.sort(
+        key=lambda m: (_parse_param_size(m.get("parameter_size", "")), m.get("modified_at", "")),
+        reverse=True,
+    )
+    return usable[0]["name"]
+
+
+def detect_top_pick() -> Optional[tuple[str, str, Optional[str]]]:
+    """Return the (provider, model, fallback_model) we'd recommend, or None.
+
+    `fallback_model` is set only for Ollama, when an uncensored/abliterated model
+    is installed alongside the primary pick.
+    """
     models = list_ollama_models()
     if models:
         best = pick_best_ollama_model(models)
         if best:
-            return ("ollama", best)
+            return ("ollama", best, pick_fallback_ollama_model(models, primary=best))
 
     for provider in CLOUD_PRIORITY:
         if provider not in PROVIDER_KEY_ENV:
             continue
         if _resolve_api_key(provider):
-            return (provider, CLOUD_DEFAULT_MODEL[provider])
+            return (provider, CLOUD_DEFAULT_MODEL[provider], None)
 
     return None
 
 
-def confirm_pick(provider: str, model: str, *, assume_yes: bool, quiet: bool = False) -> bool:
+def confirm_pick(
+    provider: str,
+    model: str,
+    fallback: Optional[str] = None,
+    *,
+    assume_yes: bool,
+    quiet: bool = False,
+) -> bool:
     """Ask the user whether to use the auto-detected provider/model.
 
     Returns True if accepted. Non-TTY (or quiet mode) without -y → False, silently.
     """
+    label = f"{provider}/{model}"
+    if fallback:
+        label += f" (with {provider}/{fallback} as refusal fallback)"
     if assume_yes:
         return True
     if quiet or not sys.stdin.isatty():
         logger.info(
-            f"LLM auto-detection found {provider}/{model} but stdin is not a TTY "
+            f"LLM auto-detection found {label} but stdin is not a TTY "
             f"(pass -y to accept automatically)"
         )
         return False
-    prompt = f"LLM tier available: {provider}/{model} — use it? [Y/n] "
+    prompt = f"LLM tier available: {label} — use it? [Y/n] "
     try:
         sys.stderr.write(prompt)
         sys.stderr.flush()
@@ -198,6 +248,7 @@ __all__ = [
     "scrapegraphai_installed",
     "list_ollama_models",
     "pick_best_ollama_model",
+    "pick_fallback_ollama_model",
     "detect_top_pick",
     "confirm_pick",
 ]

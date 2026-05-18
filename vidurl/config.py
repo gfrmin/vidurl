@@ -71,6 +71,7 @@ class VideoExtractorConfig:
     # LLM tier
     llm_provider: Optional[str] = None
     llm_model: Optional[str] = None
+    llm_fallback_model: Optional[str] = None
     disable_llm: bool = False
 
     @property

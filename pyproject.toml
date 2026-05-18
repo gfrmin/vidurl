@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vidurl"
-version = "0.4.0"
+version = "0.5.0"
 description = "Extract video URLs from web pages and generate curl download commands"
 readme = "README.md"
 license = {text = "AGPL-3.0-or-later"}

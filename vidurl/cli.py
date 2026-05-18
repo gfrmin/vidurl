@@ -93,6 +93,10 @@ Examples:
                         help="LLM provider (e.g. anthropic, openai, ollama)")
     parser.add_argument("--llm-model", type=str,
                         help="LLM model id (e.g. claude-haiku-4-5)")
+    parser.add_argument("--llm-fallback-model", type=str,
+                        help="Local Ollama model to retry with when the primary LLM "
+                             "refuses (e.g. huihui_ai/qwen2.5-abliterate:7b). "
+                             "Only used when --llm-provider is ollama.")
     parser.add_argument("--no-llm", action="store_true",
                         help="Disable the LLM tier even if provider/model are set")
     parser.add_argument("--yes", "-y", action="store_true",
@@ -147,6 +151,7 @@ def create_config(args: argparse.Namespace) -> VideoExtractorConfig:
         "page_url_template": args.page_url_template,
         "llm_provider": args.llm_provider,
         "llm_model": args.llm_model,
+        "llm_fallback_model": args.llm_fallback_model,
         "disable_llm": args.no_llm,
     }
     if args.user_agent:
@@ -164,7 +169,11 @@ def create_config(args: argparse.Namespace) -> VideoExtractorConfig:
         if scrapegraphai_installed():
             pick = detect_top_pick()
             if pick and confirm_pick(*pick, assume_yes=args.yes, quiet=args.quiet):
-                config_dict["llm_provider"], config_dict["llm_model"] = pick
+                provider, model, auto_fallback = pick
+                config_dict["llm_provider"] = provider
+                config_dict["llm_model"] = model
+                if auto_fallback and not config_dict.get("llm_fallback_model"):
+                    config_dict["llm_fallback_model"] = auto_fallback
 
     return VideoExtractorConfig(**config_dict)
 

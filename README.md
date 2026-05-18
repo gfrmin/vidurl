@@ -94,6 +94,7 @@ vidurl https://example.com/weird-page \
 | `--page-url-template URL` | URL template with `{n}`; vidurl walks 2..max-pages |
 | `--llm-provider P` | `anthropic`, `openai`, `groq`, `google`, `ollama`, ... |
 | `--llm-model M` | Model id |
+| `--llm-fallback-model M` | Local Ollama model to retry with when the primary LLM refuses |
 | `--no-llm` | Disable the LLM tier even if provider/model are set |
 | `--yes / -y` | Accept the auto-detected LLM pick without prompting |
 | `--no-headless` | Show the browser window |
@@ -105,6 +106,20 @@ vidurl https://example.com/weird-page \
 The LLM tier is **off by default**. To enable, pass both `--llm-provider` and `--llm-model` (or set them in `config.json`). API keys are read from environment first, then from gnome-keyring via `secret-tool` under `service=env, key=<PROVIDER_KEY>`. If a key is present but provider/model are not set, vidurl logs a hint and stays off — no silent spend.
 
 If you installed the `llm` extra (`pip install 'vidurl[llm]'`) and don't pass `--llm-provider`/`--llm-model`, vidurl auto-detects an available backend and asks before using it. A local Ollama install is preferred over cloud providers; among installed Ollama models, vidurl skips embedding and vision-language families and picks the largest text LLM by parameter count. Pass `-y` to accept the pick without prompting, or `--no-llm` to skip detection entirely. Non-TTY runs (pipes, cron) skip the prompt silently unless `-y` is set.
+
+### Handling refusals
+
+Aligned models (Qwen, Llama-Instruct, etc.) sometimes refuse to extract URLs from pages they consider sensitive — silently leaving you with heuristics-only results. Pass `--llm-fallback-model <ollama-model>` to retry against a local uncensored/abliterated model in that case. vidurl issues a separate classification call (also via Ollama) over the refusal text to confirm it really was a refusal before paying for the retry, so non-refusal misses (a page that genuinely has no video) cost one LLM call, not three.
+
+```bash
+vidurl https://example.com/page \
+    --llm-provider ollama --llm-model qwen2.5:7b-instruct \
+    --llm-fallback-model huihui_ai/qwen2.5-abliterate:7b
+```
+
+If you pull an Ollama model whose name contains `abliterate`, `uncensored`, `huihui`, or `dolphin`, vidurl's auto-detect will pick it as the fallback automatically — no flag needed.
+
+The fallback only kicks in when `--llm-provider` is `ollama`. Make sure the fallback model is already pulled (`ollama pull <model>`); vidurl will not pull on demand.
 
 ## Pagination
 
